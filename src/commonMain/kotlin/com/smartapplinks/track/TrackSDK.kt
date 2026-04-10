@@ -25,6 +25,53 @@ object TrackSDK {
     private const val MAX_BUFFER = 1000
     private const val BATCH_INTERVAL_MS = 30_000L
 
+    /**
+     * Initialize the SDK. Reads configuration from track.config.json in app resources.
+     * Call once at app startup — no parameters needed.
+     */
+    fun initialize() {
+        if (initialized) return
+        val launchStart = epochMs()
+
+        // Read config from resources
+        val config = readConfigFile()
+        if (config == null) {
+            println("[SmartAppLinks SDK] track.config.json not found — run 'npx @hiskicks/smartapplinks-sdk init' to set up")
+            return
+        }
+
+        this.apiKey = config["api_key"] ?: ""
+        this.ingestUrl = config["ingest_url"] ?: ""
+
+        if (apiKey.isEmpty()) {
+            println("[SmartAppLinks SDK] No API key in config — run 'npx @hiskicks/smartapplinks-sdk activate'")
+            return
+        }
+        if (ingestUrl.isEmpty()) {
+            println("[SmartAppLinks SDK] No ingest URL in config")
+            return
+        }
+
+        this.deviceId = Uuid.random().toString()
+        this.sessionNumber = 1
+        this.sessionId = Uuid.random().toString()
+        this.sessionStart = now()
+        this.initialized = true
+
+        batchJob = scope.launch {
+            delay(5_000L)
+            flush()
+            while (isActive) { delay(BATCH_INTERVAL_MS); flush() }
+        }
+
+        enqueue("lifecycle", "app_launch", mapOf("launch_duration_ms" to (epochMs() - launchStart).toString()))
+        enqueue("session", "session_start", mapOf("session_number" to sessionNumber.toString()))
+        println("[SmartAppLinks SDK] Initialized — ${getDeviceModel()} ${getPlatform()} ${getOsVersion()}")
+    }
+
+    /**
+     * Initialize with explicit parameters (for testing or advanced use).
+     */
     fun initialize(apiKey: String, ingestUrl: String) {
         if (initialized) return
         val launchStart = epochMs()
@@ -44,7 +91,7 @@ object TrackSDK {
 
         enqueue("lifecycle", "app_launch", mapOf("launch_duration_ms" to (epochMs() - launchStart).toString()))
         enqueue("session", "session_start", mapOf("session_number" to sessionNumber.toString()))
-        println("[SmartAppLinks SDK] Initialized - ${getDeviceModel()} ${getPlatform()} ${getOsVersion()}")
+        println("[SmartAppLinks SDK] Initialized — ${getDeviceModel()} ${getPlatform()} ${getOsVersion()}")
     }
 
     fun trackScreen(screenName: String) {
@@ -114,6 +161,22 @@ object TrackSDK {
         queue.add(event)
     }
 
+    private fun readConfigFile(): Map<String, String>? {
+        return try {
+            val json = readResourceFile("track.config.json") ?: return null
+            // Simple JSON parser — extract api_key and ingest_url
+            val map = mutableMapOf<String, String>()
+            val keyRegex = """"(\w+)"\s*:\s*"([^"]+)"""".toRegex()
+            keyRegex.findAll(json).forEach { match ->
+                map[match.groupValues[1]] = match.groupValues[2]
+            }
+            map
+        } catch (e: Exception) {
+            println("[SmartAppLinks SDK] Error reading config: ${e.message}")
+            null
+        }
+    }
+
     suspend fun flush() {
         if (apiKey.isEmpty() || queue.isEmpty() || optedOut) return
         val batchSize = minOf(100, queue.size)
@@ -128,7 +191,7 @@ object TrackSDK {
         val body = """{"api_key":"$apiKey","batch_id":"$batchId","sent_at":"$ts","sdk":{"name":"smartapplinks-sdk-kmp","version":"1.1.0"},"device":{"device_id":"$deviceId","platform":"${getPlatform()}","os":"${getPlatform()}","os_version":"${esc(getOsVersion())}","device_model":"${esc(getDeviceModel())}","screen_width":${getScreenWidth()},"screen_height":${getScreenHeight()},"locale":"${esc(getLocale())}","timezone":"${esc(getTimezone())}"},"app":{"app_version":"${esc(getAppVersion())}","build_number":"${esc(getBuildNumber())}","bundle_id":"${esc(getBundleId())}","framework":"kmp","framework_version":""},"session":{"session_id":"$sessionId","session_start":"$sessionStart","session_number":$sessionNumber},"events":[$eventsJson]}"""
         try {
             val result = httpPost(ingestUrl, body, apiKey, batchId)
-            println("[SmartAppLinks SDK] Sent ${events.size} events - $result")
+            println("[SmartAppLinks SDK] Sent ${events.size} events — $result")
         } catch (e: Exception) {
             queue.addAll(0, events)
             println("[SmartAppLinks SDK] Network error: ${e.message}")
@@ -148,4 +211,5 @@ expect fun getTimezone(): String
 expect fun getAppVersion(): String
 expect fun getBuildNumber(): String
 expect fun getBundleId(): String
+expect fun readResourceFile(name: String): String?
 expect suspend fun httpPost(url: String, body: String, apiKey: String, requestId: String): String

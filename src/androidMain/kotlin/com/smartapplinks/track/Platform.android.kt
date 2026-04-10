@@ -32,6 +32,13 @@ actual fun getBuildNumber(): String = ""
 
 actual fun getBundleId(): String = ""
 
+actual fun readResourceFile(name: String): String? {
+    return try {
+        val classLoader = Thread.currentThread().contextClassLoader ?: TrackSDK::class.java.classLoader
+        classLoader?.getResourceAsStream(name)?.bufferedReader()?.readText()
+    } catch (_: Exception) { null }
+}
+
 actual suspend fun httpPost(url: String, body: String, apiKey: String, requestId: String): String {
     return withContext(Dispatchers.IO) {
         val connection = URL(url).openConnection() as HttpURLConnection
